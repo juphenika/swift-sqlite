@@ -79,7 +79,7 @@ struct SQLiteTests {
     let db = try SQLite()
 
     do {
-      try db.run("SELECT * FROM nonexistent_table")
+      try db.execute("SELECT * FROM nonexistent_table")
       throw SQLite.Error(code: -1, description: "Expected error but got none")
     } catch let error as SQLite.Error {
       #expect(error.code != nil)
