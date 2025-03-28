@@ -16,19 +16,19 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 /// Example usage:
 /// ```swift
 /// let db = try SQLite(path: "database.sqlite")
-/// 
+///
 /// // Create a table
 /// try db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
-/// 
+///
 /// // Insert data with parameters
 /// try db.execute("INSERT INTO users (name, age) VALUES (?, ?)", .text("John"), .int(25))
-/// 
+///
 /// // Query data
 /// let rows = try db.execute("SELECT * FROM users WHERE age > ?", .int(18))
-/// 
+///
 /// // Update data
 /// try db.execute("UPDATE users SET age = ? WHERE name = ?", .int(26), .text("John"))
-/// 
+///
 /// // Delete data
 /// try db.execute("DELETE FROM users WHERE age < ?", .int(18))
 /// ```
@@ -78,7 +78,24 @@ public final class SQLite: @unchecked Sendable {
   /// - Returns: An array of rows, where each row is an array of `DataType` values. Empty array for statements that don't return results.
   /// - Throws: `SQLite.Error` if the statement cannot be executed or if there's an error binding parameters
   @discardableResult
-  public func execute(_ sql: String, _ bindings: DataType...) throws -> [[DataType]] {
+  public func execute(_ sql: String, _ bindings: DataType...) throws -> [Row] {
+    try self.execute(sql, bindings)
+  }
+
+  /// Executes a SQL statement with optional bindings and returns the results.
+  ///
+  /// This method can be used for all SQL operations including:
+  /// - SELECT queries (returns array of rows)
+  /// - INSERT, UPDATE, DELETE statements (returns empty array)
+  /// - CREATE TABLE and other DDL statements (returns empty array)
+  ///
+  /// - Parameters:
+  ///   - sql: The SQL statement to execute
+  ///   - bindings: Optional parameters to bind to the SQL statement using ? placeholders
+  /// - Returns: An array of rows, where each row is an array of `DataType` values. Empty array for statements that don't return results.
+  /// - Throws: `SQLite.Error` if the statement cannot be executed or if there's an error binding parameters
+  @discardableResult
+  public func execute(_ sql: String, _ bindings: [DataType]) throws -> [Row] {
     try self.serializationQueue.sync {
       var stmt: OpaquePointer?
       try self.validate(sqlite3_prepare_v2(self.handle, sql, -1, &stmt, nil))
@@ -101,33 +118,61 @@ public final class SQLite: @unchecked Sendable {
         }
       }
       let cols = sqlite3_column_count(stmt)
-      var rows: [[DataType]] = []
+      var rows: [Row] = []
       while try self.validate(sqlite3_step(stmt)) == SQLITE_ROW {
-        rows.append(
-          try (0..<cols).map { idx -> DataType in
-            switch sqlite3_column_type(stmt, idx) {
-            case SQLITE_BLOB:
-              if let bytes = sqlite3_column_blob(stmt, idx) {
-                let count = Int(sqlite3_column_bytes(stmt, idx))
-                return .blob(Data(bytes: bytes, count: count))
-              } else {
-                return .blob(Data())
-              }
-            case SQLITE_FLOAT:
-              return .real(sqlite3_column_double(stmt, idx))
-            case SQLITE_INTEGER:
-              return .int(sqlite3_column_int64(stmt, idx))
-            case SQLITE_NULL:
-              return .null
-            case SQLITE_TEXT:
-              return .text(String(cString: sqlite3_column_text(stmt, idx)))
-            default:
-              throw Error(description: "fatal")
+        let values = try (0..<cols).map { idx -> (String, DataType) in
+          let columnName = String(cString: sqlite3_column_name(stmt, idx)).lowercased()
+
+          switch sqlite3_column_type(stmt, idx) {
+          case SQLITE_BLOB:
+            if let bytes = sqlite3_column_blob(stmt, idx) {
+              let count = Int(sqlite3_column_bytes(stmt, idx))
+              return (columnName, .blob(Data(bytes: bytes, count: count)))
+            } else {
+              return (columnName, .blob(Data()))
             }
+          case SQLITE_FLOAT:
+            return (columnName, .real(sqlite3_column_double(stmt, idx)))
+          case SQLITE_INTEGER:
+            return (columnName, .int(sqlite3_column_int64(stmt, idx)))
+          case SQLITE_NULL:
+            return (columnName, .null)
+          case SQLITE_TEXT:
+            return (columnName, .text(String(cString: sqlite3_column_text(stmt, idx))))
+          default:
+            throw Error(description: "fatal")
           }
-        )
+        }
+
+        var lowercasedNameToIndex: [String: Int] = [:]
+
+        for (idx, value) in zip(values.indices, values) {
+          lowercasedNameToIndex[value.0] = idx
+        }
+
+        rows.append(Row(lowercasedNameToIndex: lowercasedNameToIndex, values: values.map(\.1)))
       }
       return rows
+    }
+  }
+
+  /// Executes a block of code within a transaction.
+  ///
+  /// This method starts a transaction, executes the provided block, and commits the transaction if it completes successfully.
+  /// If the block throws an error, the transaction is rolled back and the error is rethrown.
+  ///
+  /// - Parameters:
+  ///   - block: A closure that performs the desired operations.
+  /// - Throws: The error thrown by the block, or a new `SQLite.Error` if the transaction fails.
+  public func withTransaction(_ block: () throws -> Void) throws {
+    try self.execute("BEGIN TRANSACTION")
+
+    do {
+      try block()
+      try self.execute("COMMIT")
+    } catch {
+      try self.execute("ROLLBACK")
+      throw error
     }
   }
 
@@ -153,7 +198,7 @@ public final class SQLite: @unchecked Sendable {
   }
 
   /// Represents all possible SQLite data types that can be stored or retrieved from the database.
-  public enum DataType: Equatable {
+  public enum DataType: Hashable, Sendable {
     /// Binary data
     case blob(Data)
     /// Integer value
@@ -184,5 +229,46 @@ extension SQLite.Error {
   init(code: Int32, db: OpaquePointer?) {
     self.code = code
     self.description = String(cString: sqlite3_errstr(code))
+  }
+}
+
+/// A row from a SQLite database.
+///
+/// This struct represents a single row from a SQLite database table. It provides a type-safe way to access the values in the row using column names or indices.
+///
+/// Example usage:
+/// ```swift
+/// let row = try db.execute("SELECT * FROM users WHERE id = ?", .int(1))[0]
+/// let name = row["name"] // "John"
+/// let age = row[0] // 25
+/// ```
+public struct Row: Hashable, Sendable {
+  let lowercasedNameToIndex: [String: Int]
+  let values: [SQLite.DataType]
+
+  init(lowercasedNameToIndex: [String: Int], values: [SQLite.DataType]) {
+    self.lowercasedNameToIndex = lowercasedNameToIndex
+    self.values = values
+  }
+
+  func index(for column: String) -> Int? {
+    self.lowercasedNameToIndex[column.lowercased()]
+  }
+
+  /// Accesses the value of the column with the given name.
+  ///
+  /// - Parameter name: The name of the column to access
+  /// - Returns: The value of the column as a `SQLite.DataType`
+  public subscript(name: String) -> SQLite.DataType? {
+    guard let index = self.index(for: name) else { return nil }
+    return self.values[index]
+  }
+
+  /// Accesses the value of the column at the given index.
+  ///
+  /// - Parameter index: The index of the column to access
+  /// - Returns: The value of the column as a `SQLite.DataType`
+  public subscript(index: Int) -> SQLite.DataType {
+    self.values[index]
   }
 }
