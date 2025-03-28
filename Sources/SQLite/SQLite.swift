@@ -1,4 +1,4 @@
-import Dispatch
+import Foundation
 
 #if os(Linux)
   import Csqlite3
@@ -56,8 +56,11 @@ public final class SQLite: @unchecked Sendable {
           try self.validate(sqlite3_bind_double(stmt, idx, value))
         case let .text(value):
           try self.validate(sqlite3_bind_text(stmt, idx, value, -1, SQLITE_TRANSIENT))
-        case let .blob(value):
-          try self.validate(sqlite3_bind_blob(stmt, idx, value, -1, SQLITE_TRANSIENT))
+        case let .blob(data):
+          try data.withUnsafeBytes {
+            try self.validate(
+              sqlite3_bind_blob(stmt, idx, $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT))
+          }
         }
       }
       let cols = sqlite3_column_count(stmt)
@@ -67,7 +70,12 @@ public final class SQLite: @unchecked Sendable {
           try (0..<cols).map { idx -> DataType in
             switch sqlite3_column_type(stmt, idx) {
             case SQLITE_BLOB:
-              return .blob(sqlite3_column_blob(stmt, idx).load(as: [UInt8].self))
+              if let bytes = sqlite3_column_blob(stmt, idx) {
+                let count = Int(sqlite3_column_bytes(stmt, idx))
+                return .blob(Data(bytes: bytes, count: count))
+              } else {
+                return .blob(Data())
+              }
             case SQLITE_FLOAT:
               return .real(sqlite3_column_double(stmt, idx))
             case SQLITE_INTEGER:
@@ -100,7 +108,7 @@ public final class SQLite: @unchecked Sendable {
   }
 
   public enum DataType: Equatable {
-    case blob([UInt8])
+    case blob(Data)
     case int(Int64)
     case null
     case real(Double)
