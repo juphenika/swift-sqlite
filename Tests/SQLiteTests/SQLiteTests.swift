@@ -9,7 +9,7 @@ struct SQLiteTests {
     try db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
     try db.execute("INSERT INTO test (id, name) VALUES (1, 'test')")
 
-    let result = try db.run("SELECT * FROM test")
+    let result = try db.execute("SELECT * FROM test")
     #expect(result.count == 1)
     #expect(result[0][0] == .int(1))
     #expect(result[0][1] == .text("test"))
@@ -24,7 +24,7 @@ struct SQLiteTests {
     try db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
     try db.execute("INSERT INTO test (id, name) VALUES (1, 'test')")
 
-    let result = try db.run("SELECT * FROM test")
+    let result = try db.execute("SELECT * FROM test")
     #expect(result.count == 1)
     #expect(result[0][0] == .int(1))
     #expect(result[0][1] == .text("test"))
@@ -49,13 +49,13 @@ struct SQLiteTests {
     let textVal = "Hello, World!"
     let blobVal = "Hello, Blob!".data(using: .utf8)!
 
-    try db.run(
+    try db.execute(
       """
           INSERT INTO test (int_val, real_val, text_val, blob_val, null_val)
           VALUES (?, ?, ?, ?, ?)
       """, .int(intVal), .real(realVal), .text(textVal), .blob(blobVal), .null)
 
-    let result = try db.run("SELECT * FROM test")
+    let result = try db.execute("SELECT * FROM test")
     #expect(result.count == 1)
     #expect(result[0][1] == .int(intVal))
     #expect(result[0][2] == .real(realVal))
@@ -79,7 +79,7 @@ struct SQLiteTests {
     let db = try SQLite()
 
     do {
-      try db.execute("SELECT * FROM nonexistent_table")
+      try db.run("SELECT * FROM nonexistent_table")
       throw SQLite.Error(code: -1, description: "Expected error but got none")
     } catch let error as SQLite.Error {
       #expect(error.code != nil)
@@ -96,12 +96,12 @@ struct SQLiteTests {
     await withTaskGroup(of: Void.self) { group in
       for i in 0..<iterations {
         group.addTask {
-          _ = try? db.run("INSERT INTO test (name) VALUES (?)", .text("test\(i)"))
+          _ = try? db.execute("INSERT INTO test (name) VALUES (?)", .text("test\(i)"))
         }
       }
     }
 
-    let result = try db.run("SELECT COUNT(*) FROM test")
+    let result = try db.execute("SELECT COUNT(*) FROM test")
     #expect(result[0][0] == .int(Int64(iterations)))
   }
 }
