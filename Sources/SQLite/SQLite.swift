@@ -209,6 +209,42 @@ public final class SQLite: @unchecked Sendable {
     case real(Double)
     /// Text value
     case text(String)
+
+    public var dataValue: Data? {
+      switch self {
+      case .blob(let value):
+        return value
+      default:
+        return nil
+      }
+    }
+
+    public var stringValue: String? {
+      switch self {
+      case .text(let value):
+        return value
+      default:
+        return nil
+      }
+    }
+
+    public var intValue: Int64? {
+      switch self {
+      case .int(let value):
+        return value
+      default:
+        return nil
+      }
+    }
+
+    public var doubleValue: Double? {
+      switch self {
+      case .real(let value):
+        return value
+      default:
+        return nil
+      }
+    }
   }
 
   /// Represents an error that occurred during SQLite operations.
