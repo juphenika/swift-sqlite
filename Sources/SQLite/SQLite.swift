@@ -164,12 +164,14 @@ public final class SQLite: @unchecked Sendable {
   /// - Parameters:
   ///   - block: A closure that performs the desired operations.
   /// - Throws: The error thrown by the block, or a new `SQLite.Error` if the transaction fails.
-  public func withTransaction(_ block: () throws -> Void) throws {
+  @discardableResult
+  public func withTransaction<R>(_ block: () throws -> R) throws -> R {
     try self.execute("BEGIN TRANSACTION")
 
     do {
-      try block()
+      let result = try block()
       try self.execute("COMMIT")
+      return result
     } catch {
       try self.execute("ROLLBACK")
       throw error
